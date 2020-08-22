@@ -131,10 +131,8 @@ fn main_try() -> Result<()> {
         print_families()?;
         std::process::exit(0);
     } else {
-        config
-            .general
-            .chip
-            .as_ref()
+        opt.target
+            .or_else(|| config.general.chip.clone())
             .map(|chip| chip.into())
             .unwrap_or(TargetSelector::Auto)
     };
