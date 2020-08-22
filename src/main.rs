@@ -36,6 +36,12 @@ struct Opt {
     config: Option<String>,
     #[structopt(name = "list-chips", long = "list-chips")]
     list_chips: bool,
+    #[structopt(
+        long = "probe",
+        help = "Use this flag to select a specific probe in the list.\n\
+        Use '--probe VID:PID' or '--probe VID:PID:Serial' if you have more than one probe with the same VID:PID."
+    )]
+    probe_selector: Option<DebugProbeSelector>,
     #[structopt(name = "disable-progressbars", long = "disable-progressbars")]
     disable_progressbars: bool,
 
@@ -60,7 +66,7 @@ struct Opt {
     features: Vec<String>,
 }
 
-const ARGUMENTS_TO_REMOVE: &[&str] = &["list-chips", "disable-progressbars"];
+const ARGUMENTS_TO_REMOVE: &[&str] = &["list-chips", "disable-progressbars", "probe="];
 
 fn main() {
     match main_try() {
@@ -168,36 +174,44 @@ fn main_try() -> Result<()> {
     ));
 
     // If we got a probe selector in the config, open the probe matching the selector if possible.
-    let mut probe = match (config.probe.usb_vid.as_ref(), config.probe.usb_pid.as_ref()) {
-        (Some(vid), Some(pid)) => {
-            let selector = DebugProbeSelector {
-                vendor_id: u16::from_str_radix(vid, 16)?,
-                product_id: u16::from_str_radix(pid, 16)?,
-                serial_number: config.probe.serial.clone(),
-            };
-            Probe::open(selector)?
-        }
-        _ => {
-            if let Some(_) = config.probe.usb_vid {
-                log::warn!("USB VID ignored, because PID is not specified.");
+    let mut probe = if let Some(selector) = opt.probe_selector {
+        Probe::open(selector)?
+    } else {
+        match (config.probe.usb_vid.as_ref(), config.probe.usb_pid.as_ref()) {
+            (Some(vid), Some(pid)) => {
+                let selector = DebugProbeSelector {
+                    vendor_id: u16::from_str_radix(vid, 16)?,
+                    product_id: u16::from_str_radix(pid, 16)?,
+                    serial_number: config.probe.serial.clone(),
+                };
+                Probe::open(selector)?
             }
-            if let Some(_) = config.probe.usb_pid {
-                log::warn!("USB PID ignored, because VID is not specified.");
-            }
+            _ => {
+                if config.probe.usb_vid.is_some() {
+                    log::warn!("USB VID ignored, because PID is not specified.");
+                }
+                if config.probe.usb_pid.is_some() {
+                    log::warn!("USB PID ignored, because VID is not specified.");
+                }
 
-            // Only automatically select a probe if there is only
-            // a single probe detected.
-            let list = Probe::list_all();
-            if list.len() > 1 {
-                return Err(anyhow!("More than a single probe was detected. Use the [default.probe] config attribute \
+                // Only automatically select a probe if there is only
+                // a single probe detected.
+                let list = Probe::list_all();
+                if list.len() > 1 {
+                    return Err(anyhow!("{}
+
+                                    Use '--probe VID:PID'. \
+
+                                    For persistent changes you can use the [default.probe] config attribute \
                                     (in your Embed.toml) to select which probe to use. \
-                                    For usage examples see https://github.com/probe-rs/cargo-embed/blob/master/src/config/default.toml ."));
+                                    For usage examples see https://github.com/probe-rs/cargo-embed/blob/master/src/config/default.toml .",
+                                    list_connected_devices()));
+                }
+                Probe::open(
+                    list.first()
+                        .ok_or_else(|| anyhow!("No supported probe was found"))?,
+                )?
             }
-
-            Probe::open(
-                list.first()
-                    .ok_or_else(|| anyhow!("No supported probe was found"))?,
-            )?
         }
     };
 
@@ -505,4 +519,20 @@ fn print_families() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Lists all connected devices
+fn list_connected_devices() -> String {
+    let probes = Probe::list_all();
+
+    if !probes.is_empty() {
+        let mut message = format!("The following devices were found:");
+        probes
+            .iter()
+            .enumerate()
+            .for_each(|(num, link)| message.push_str(&format!("[{}]: {:?}", num, link)));
+        message
+    } else {
+        format!("No devices were found.")
+    }
 }
